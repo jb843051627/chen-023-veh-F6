@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.fc.v2.mapper.custom.TVehXferBillBoardMapper">
+
+    <!--
+      台账屏只此一条 SELECT：全册单数、在核单数（立案加一、办讫减一）、
+      逐节点在核张数、当段本轮已落几人，全随名单同一快照回来，同一回点算成。
+      已落几人从落笔留痕现点（按单按段按轮分组），屏上那个数只算回显，不留手填格。
+      分页在服务层按这同一份名单切，不在库里另起第二条口径。
+    -->
+    <select id="selectBoardPage" parameterType="com.fc.v2.model.custom.VehXferQuery"
+            resultType="com.fc.v2.model.auto.TVehXferBill">
+        SELECT
+            f.id,
+            f.bill_no,
+            f.node_no,
+            f.round_no,
+            f.status,
+            f.done_at,
+            f.del_flag,
+            f.create_by,
+            f.create_time,
+            f.update_by,
+            f.update_time,
+            f.remark,
+            COALESCE(s.cur_sign_count, 0)              AS cur_sign_count,
+            COUNT(*) OVER()                            AS board_total,
+            (SELECT COUNT(*) FROM t_veh_xfer_bill
+               WHERE del_flag = 0 AND (status IS NULL OR status = 0)) AS board_active_count,
+            (SELECT COUNT(*) FROM t_veh_xfer_bill
+               WHERE del_flag = 0 AND (status IS NULL OR status = 0) AND node_no = 0) AS board_node0_active,
+            (SELECT COUNT(*) FROM t_veh_xfer_bill
+               WHERE del_flag = 0 AND (status IS NULL OR status = 0) AND node_no = 1) AS board_node1_active,
+            (SELECT COUNT(*) FROM t_veh_xfer_bill
+               WHERE del_flag = 0 AND (status IS NULL OR status = 0) AND node_no = 2) AS board_node2_active
+        FROM t_veh_xfer_bill f
+        <!-- 当段本轮已落几人：落笔留痕按 单+段+轮 分组现点，与卷上当段当轮对上号 -->
+        LEFT JOIN (SELECT bill_id, node_no, round_no, COUNT(*) AS cur_sign_count
+                     FROM t_veh_xfer_sign
+                    WHERE del_flag = 0
+                    GROUP BY bill_id, node_no, round_no) s
+               ON s.bill_id = f.id AND s.node_no = f.node_no AND s.round_no = f.round_no
+        <where>
+            f.del_flag = 0
+            <if test="billNo != null and billNo != ''">
+                AND f.bill_no LIKE CONCAT(#{billNo}, '%')
+            </if>
+            <if test="status != null">
+                AND f.status = #{status}
+            </if>
+            <if test="nodeNo != null">
+                AND f.node_no = #{nodeNo}
+            </if>
+        </where>
+        ORDER BY f.id DESC
+    </select>
+
+</mapper>

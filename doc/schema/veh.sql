@@ -214,6 +214,66 @@ CREATE TABLE IF NOT EXISTS t_veh_move_bill (
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='移交执法核签单';
 
+-- 核签单系统盯办一套（另起的新名目，旧 t_veh_move_bill 一套不动）：
+-- 卷上只记停在哪一段、第几轮、什么情形；已落几人不留手填格，全由落笔留痕现点。
+CREATE TABLE IF NOT EXISTS t_veh_xfer_bill (
+  id bigint NOT NULL COMMENT '主键',
+  bill_no varchar(64) DEFAULT NULL COMMENT '核签单代号（系统排号，单上自带的不认）',
+  node_no int DEFAULT NULL COMMENT '整张单停在哪一段 0初审(监督处监控岗) 1复核(市处法规科) 2终审(省中心分管负责人)',
+  round_no int DEFAULT '1' COMMENT '第几轮落笔：不予移交压回一格即加一，新份与旧份凭这轮次分开放',
+  status int DEFAULT NULL COMMENT '核签情形 0在核 1办讫(移交办讫) 2驳回(全单止住)',
+  done_at datetime DEFAULT NULL COMMENT '办讫那一刻（第三段点齐时钉上，与名册同一回算出来）',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  update_by varchar(64) DEFAULT NULL COMMENT '更新者',
+  update_time datetime DEFAULT NULL COMMENT '更新时间',
+  remark varchar(500) DEFAULT NULL COMMENT '备注（现行那张表单的老格，式样不动）',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_veh_xfer_bill_no (bill_no),
+  KEY idx_veh_xfer_bill_status (status, node_no, del_flag)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='移交执法核签单（系统盯办卷）';
+
+-- 一笔一笔的落笔留痕：主键自增即落笔先后，前后脚同时到也点得出谁先；
+-- 唯一键 (bill_id,node_no,round_no,signer_no) 挡住同一个人在同一节点本轮重复落笔。
+CREATE TABLE IF NOT EXISTS t_veh_xfer_sign (
+  id bigint NOT NULL AUTO_INCREMENT COMMENT '主键（落笔先后只认这把自增尺）',
+  bill_id bigint NOT NULL COMMENT '所属核签单 id',
+  node_no int NOT NULL COMMENT '落在哪一段（系统数出来的当段，递单口信节点号进不了这格）',
+  round_no int NOT NULL COMMENT '第几轮落的（压回重走的新份与旧份凭这轮次分开，哪天补的各有凭据）',
+  signer_no varchar(64) NOT NULL COMMENT '落笔人代号',
+  signer_name varchar(64) DEFAULT NULL COMMENT '落笔人姓名（屏上回显各写了什么）',
+  decision varchar(8) NOT NULL COMMENT '这一笔的话 MOVE可移交 HOLD不予移交',
+  comment varchar(500) DEFAULT NULL COMMENT '这一笔写的话（两人各写了什么屏上都看得见）',
+  claim_node int DEFAULT NULL COMMENT '递单自报的节点号（只当口信留痕，驱动不了段次）',
+  signed_at datetime DEFAULT NULL COMMENT '落在哪一刻（墙钟 yyyy-MM-dd HH:mm:ss）',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_veh_xfer_sign_once (bill_id, node_no, round_no, signer_no),
+  KEY idx_veh_xfer_sign_bill (bill_id, node_no, round_no, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='移交核签单落笔留痕';
+
+-- 移交执法名册（受理簿）：终审结论与三段笔数快照，与单上结论同源一次回算，不许手填。
+CREATE TABLE IF NOT EXISTS t_veh_xfer_roster (
+  id bigint NOT NULL COMMENT '主键',
+  bill_id bigint NOT NULL COMMENT '核签单 id',
+  bill_no varchar(64) DEFAULT NULL COMMENT '核签单代号',
+  conclusion varchar(8) DEFAULT NULL COMMENT '终审结论（MOVE可移交，与单上结论同一次回算）',
+  node0_count int DEFAULT NULL COMMENT '第一段有效笔数（回算快照）',
+  node1_count int DEFAULT NULL COMMENT '第二段有效笔数（回算快照）',
+  node2_count int DEFAULT NULL COMMENT '第三段有效笔数（回算快照）',
+  round_no int DEFAULT NULL COMMENT '办讫时单子在第几轮',
+  done_at datetime DEFAULT NULL COMMENT '办讫那一刻（与单上同一刻）',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_veh_xfer_roster_bill (bill_id),
+  KEY idx_veh_xfer_roster_done (done_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='移交执法名册（与终审结论同源一次回算）';
+
 CREATE TABLE IF NOT EXISTS t_veh_run_line (
   id bigint NOT NULL COMMENT '主键',
   rule_code varchar(64) DEFAULT NULL COMMENT '运行界次判定线代号',
@@ -303,3 +363,7 @@ VALUES (0, 'YH00', '宁州顺达客运有限公司（道路旅客运输业户，
 -- ALTER TABLE t_veh_handle_flow ADD COLUMN close_kind varchar(32) DEFAULT NULL COMMENT '收口凭据 REVIEW/OUTSIDE/DEREGISTERED' AFTER review_opinion;
 -- ALTER TABLE t_veh_handle_flow ADD KEY idx_veh_handle_active (veh_code, alarm_kind, status, del_flag);
 -- 另需补建一张新表：t_veh_handle_note（照上面 CREATE 语句）。
+
+-- 旧库补建（核签单系统盯办一套为三张新表，旧库逐条执行；新库由上面的 CREATE TABLE 带出，勿重复执行）：
+-- t_veh_xfer_bill / t_veh_xfer_sign / t_veh_xfer_roster（照上面 CREATE 语句）；
+-- 旧 t_veh_move_bill 一套原样保留，不并表、不搬数。
