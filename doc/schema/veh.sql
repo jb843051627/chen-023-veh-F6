@@ -303,3 +303,71 @@ VALUES (0, 'YH00', '宁州顺达客运有限公司（道路旅客运输业户，
 -- ALTER TABLE t_veh_handle_flow ADD COLUMN close_kind varchar(32) DEFAULT NULL COMMENT '收口凭据 REVIEW/OUTSIDE/DEREGISTERED' AFTER review_opinion;
 -- ALTER TABLE t_veh_handle_flow ADD KEY idx_veh_handle_active (veh_code, alarm_kind, status, del_flag);
 -- 另需补建一张新表：t_veh_handle_note（照上面 CREATE 语句）。
+
+-- ============================================================================
+-- 3b. 核签单新走法（监督处三节点从头盯到尾）——另起的一套，旧 t_veh_move_bill 模样不改。
+-- 卷 t_veh_sign_bill：停在哪一段、第几轮、办讫/驳回只由服务一处同落。
+-- 落笔流水 t_veh_sign_ink：一笔不落 sign_count 这种手填格，系统顺着落笔先后点条数当数。
+-- 移交名册 t_veh_transfer_register：终审结论与名册行同一次回算（TRANSFER 动作），不一处取数一处手填。
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS t_veh_sign_bill (
+  id bigint NOT NULL COMMENT '主键',
+  bill_no varchar(64) DEFAULT NULL COMMENT '核签单号（系统排 HS+雪花，递单自带的不认）',
+  clue_no varchar(64) DEFAULT NULL COMMENT '督办线索代号（这张单为什么起）',
+  stage int DEFAULT '0' COMMENT '停在哪一段 0监督处监控岗初审 1市处法规科复核 2省中心分管负责人终审（只由系统数，递单捎来的 node 只当口信）',
+  round_no int DEFAULT '1' COMMENT '在这一段重走第几轮（压回重走加一，新份旧份分开放的凭据）',
+  status int DEFAULT '0' COMMENT '情形 0在签 1已办讫(移交) 2已驳回(整单止住) 3待定(终审两名一可一不可，挂着不动)',
+  request_id varchar(64) DEFAULT NULL COMMENT '最近一次递单的幂等键（只记最近一回；重递认不认看流水上的同键头一笔）',
+  final_decision varchar(16) DEFAULT NULL COMMENT '终审同判结论 MOVE可移交/REJECT不予移交（只有终审两笔同判才落）',
+  closed_at datetime DEFAULT NULL COMMENT '办讫/驳回那一刻（封钉）',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  update_by varchar(64) DEFAULT NULL COMMENT '更新者',
+  update_time datetime DEFAULT NULL COMMENT '更新时间',
+  remark varchar(500) DEFAULT NULL COMMENT '备注',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_veh_sign_bill_no (bill_no),
+  KEY idx_veh_sign_request (request_id),
+  KEY idx_veh_sign_status (status, del_flag)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='核签单卷（三节点新走法，旧 t_veh_move_bill 不动）';
+
+-- 一段一段的落笔：系统顺着这张单的落笔先后点条数当"已落几人"，不留手填计数。
+-- 判不予移交时只抹本轮这一段（void 不物理删，留痕），更早各节点与更早各轮的旧笔原样存底。
+CREATE TABLE IF NOT EXISTS t_veh_sign_ink (
+  id bigint NOT NULL COMMENT '主键',
+  bill_id bigint NOT NULL COMMENT '所属核签单 id',
+  node_no int NOT NULL COMMENT '落在哪一段 0初审 1复核 2终审（照系统当下那一段，不睬口信）',
+  round_no int NOT NULL COMMENT '该段第几轮（重走新起一轮，新份与旧份分开，哪天补的各有凭据）',
+  signer_no varchar(64) NOT NULL COMMENT '落笔人代号',
+  verdict varchar(16) NOT NULL COMMENT '这一笔的话 MOVE可移交/REJECT不予移交',
+  claim_node int DEFAULT NULL COMMENT '递单捎来的节点号（只当口信留痕，对不上不调和）',
+  request_id varchar(64) DEFAULT NULL COMMENT '这笔是哪次递单带进来的（幂等凭据）',
+  ink_state int DEFAULT '0' COMMENT '这笔的情形 0在册作数 1本轮压回被抹（留痕不删）',
+  ink_at datetime DEFAULT NULL COMMENT '落在哪一刻（并发前后脚各是各的行）',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  PRIMARY KEY (id),
+  -- 唯一键挡住：同一人在同一节点同一轮重复落笔（并发前后脚同时到也只放一笔）
+  UNIQUE KEY uk_veh_sign_ink_signer (bill_id, node_no, round_no, signer_no),
+  -- 同一笔递交重递按幂等：同一次递单带进来的第二笔不再落
+  UNIQUE KEY uk_veh_sign_ink_request (bill_id, request_id),
+  KEY idx_veh_sign_ink_bill (bill_id, node_no, round_no, ink_state)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='核签单落笔流水（系统点条数当数，不设手填计数栏）';
+
+-- 移交名册：第三段点齐(两笔同判可移交)时，与终审结论同一事务回算写一行。
+-- 屏上终审那一处与名册两处跨模块同源，一次算出，不许一处取数一处手填。
+CREATE TABLE IF NOT EXISTS t_veh_transfer_register (
+  id bigint NOT NULL COMMENT '主键',
+  bill_id bigint NOT NULL COMMENT '所办讫的核签单 id',
+  bill_no varchar(64) DEFAULT NULL COMMENT '核签单号（与卷上同一份）',
+  decision varchar(16) NOT NULL COMMENT '终审定谳 MOVE可移交（名册只收同判可移交的）',
+  decided_at datetime DEFAULT NULL COMMENT '终审两笔同判、回算落名册那一刻',
+  del_flag int DEFAULT '0' COMMENT '删除标记 0正常 1删除',
+  create_by varchar(64) DEFAULT NULL COMMENT '创建者',
+  create_time datetime DEFAULT NULL COMMENT '创建时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_veh_transfer_bill (bill_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='移交交通运输综合行政执法机构名册（与终审同源回算）';

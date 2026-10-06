@@ -53,6 +53,16 @@ public class ResultTable {
      */
     private Integer handleActive;
 
+    /**
+     * 核签单台账屏头：本屏张数
+     */
+    private Long signTotal;
+
+    /**
+     * 核签单台账屏头：全册在签张数（立案加一、办讫/驳回减一，与名单同一次算）
+     */
+    private Integer signActive;
+
     public Integer getCode() {
         return code;
     }
@@ -123,6 +133,22 @@ public class ResultTable {
 
     public void setHandleActive(Integer handleActive) {
         this.handleActive = handleActive;
+    }
+
+    public Long getSignTotal() {
+        return signTotal;
+    }
+
+    public void setSignTotal(Long signTotal) {
+        this.signTotal = signTotal;
+    }
+
+    public Integer getSignActive() {
+        return signActive;
+    }
+
+    public void setSignActive(Integer signActive) {
+        this.signActive = signActive;
     }
 
     /**

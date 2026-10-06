@@ -92,6 +92,55 @@
 - `rollback`：退上一档、本档落印作废清零、重回在核；初核退无可退返 null。
 - 已办结/已否决封档，不再落印。
 
+## 3b. 移交执法核签单（三节点新走法，另起的一套）
+
+> 旧 §3 `t_veh_move_bill` 的 approve/reject/rollback **一字未动**；这套新走法另起表、另起服务接着，
+> 不回头改它的模样——宁可另起一套，也不去动那一套。
+
+- 表：`t_veh_sign_bill`（卷）+ `t_veh_sign_ink`（落笔流水，不留手填计数格）+
+  `t_veh_transfer_register`（移交名册）；服务 `TVehSignBillServiceImpl`；唯一一把尺
+  `VehSignRuler`（纯算，不碰库）。
+- 三段 `node_no` 0监督处监控岗初审 / 1市处法规科复核 / 2省中心分管负责人终审，**口径互不相同不许抄**
+  （`VehSignRuler.SignMode`）：
+  - 初审 `FIRST` 应到 1：一名就够，谁先落这一段便算齐；
+  - 复核 `FIRST_WINS` 应到 2：取**先落笔**那位（按 ink_at,id）的话为准，后一名照数入账、票次累加，
+    两人各写了什么屏上都看得见；
+  - 终审 `CONSENSUS` 应到 2：两笔并发前后脚，两人都写 MOVE 才齐；一可一不可 → `PENDING` 挂待定，
+    不进下段也不终止、此期间不收笔；两笔都 REJECT → 定论不予移交压回。
+- 情形 `status` 0在签 1已办讫 2已驳回 3待定。`round_no` 是本段重走第几轮（新旧份分开放的凭据）。
+- **四问只认一处**（`VehSignRuler.evaluate` + 服务）：这一段算不算齐、下段开不开、压回来清哪一段、
+  点齐后还收不收笔。别处问不出第二套。
+- **已落几人只点不填**：服务顺着落笔先后点 `t_veh_sign_ink` 当轮在册(ink_state=0)条数，
+  条数与应到人数持平才叫齐；屏上数字只是这一处点完的回显。回读逐节点挂 `TVehSignNodeView`
+  （当轮 current、历轮/被抹 history）。
+- 落笔唯一口子 `POST /vehSignBill/sign`（`VehSignForm`→`VehSignReceipt`）：
+  - **节点只认系统**：卷上 `stage` 是唯一来处；报文 `claimNode` 只当口信（落 ink.claim_node 留痕），
+    对不上不作调和、不旁处按号重排，这一笔当没落，单照旧停在系统那一段（跳过复核径到终审即此）；
+    不带口信(null)照落。
+  - 走只进紧邻下段（上一段没齐下段笔不作数）；`nextRoundNo` 进/退到某段取该段已有轮次+1。
+  - **同人同轮唯一键** `uk_veh_sign_ink_signer(bill_id,node_no,round_no,signer_no)` 挡重复落笔
+    （服务先查一道、库唯一键挡并发那道，抛 DuplicateKeyException 回库认头笔）。
+  - **幂等** `request_id`：流水 `uk_veh_sign_ink_request` 认同键头一笔，重递 accepted 但 newInk=false；
+    卷上只挂最近一回 request_id。
+  - **判不予移交只收一格**：`OUT_PRESS_BACK` 时把**本段本轮**在册各笔置 ink_state=1（留痕不物理删），
+    同时退段（初审退仍在初审、另起第 2 轮；复核退初审；终审退复核），抹笔与退档同处一个
+    `@Transactional`，要么一起成要么一起不成；更早各节点、更早各轮旧笔原样存底。
+  - 终审两笔同判 MOVE → `status=1` 办讫、final_decision=MOVE、closed_at 钉封，
+    **同一事务**往 `t_veh_transfer_register` 回算一行（`writeRegister`）：屏上终审结论与名册两处
+    跨模块同源，不许一处取数一处手填。
+- **整单驳回** `POST /vehSignBill/dismiss`（`VehSignDismissForm`，驳回人+缘由必给）：
+  与"判不予移交压回"是两件事——驳回即 `status=2` 终态，全单止住、后面各段不再收笔；
+  口信节点对不上不落；同 requestId 重递按头一回回。
+- **封档只读**：办讫/驳回后加不进一笔、改不了一字、整张抽不掉（无删除/更新口子）。
+- **在签张数**：立案 +1、办讫/驳回 -1（待定仍占数）。值班屏 `GET /vehSignBill/list`
+  一条 SQL（`TVehSignBillBoardMapper.xml`）：名单分页与屏头数同一快照
+  （全册 del_flag=0 且 status IN (0,3) 标量子查询），与逐节点点出的同一回计算；
+  `ResultTable.signTotal/signActive`；另有 `GET /activeCount` 回库现点对得齐。
+- 事后翻查 `GET /vehSignBill/detail`：从终审逐节点点回初审，笔数与受理簿一笔不差，单抽一段也站得住；
+  名册 `GET /vehSignBill/register`。立案 `POST /open`（线索代号 clue_no 必给，单号 HS+雪花，自带号不认）。
+- 格错（空落笔人/话非 MOVE·REJECT/无线索）抛 `VehSignRejectException`（点明哪格，全局解析照原话回）；
+  查无/封档/待定/跳关/重笔这类"不收"由回执 accepted=false·newInk=false 回话，卷上不动。
+
 ## 4. 证照到期催办（周期任务）
 
 - 表：`t_veh_due_task`；服务 `TVehDueTaskServiceImpl`（旧驱动）。
@@ -156,5 +205,8 @@ mvn -o test
 需求点过名的坑（压线、同一把舍法、历史窗口、说话次序、停用、悬空代号、状态同源、签批过档、催办窗口、
 批派窗口静默段/办事日剔假/废格卡环/销户空联络人/同户相斥/休办定额顺延/双痕迹/回库现点/五百截断、
 处置单定性四样/同车同类相斥/紧邻站/知会几笔/回告钟点压线/报文步次只当来意/同站不另起行/同秒两段/
-退回清零旧段不抹/收口两说封死只读/台账同算等）
-都有对应用例钉着；改口径先改/加这些用例。处置单尺子的纯算用例在 `VehHandleRulerTest`。
+退回清零旧段不抹/收口两说封死只读/台账同算等、
+核签新走法三段口径互异/先落为准/同判与分歧待定/跳关口信不落/同人同轮唯一键/并发唯一键/重递幂等/
+判不可只抹本轮同事务旧笔存底/新旧轮分开/驳回终止/办讫封档只读/终审名册同源/在签数同算等）
+都有对应用例钉着；改口径先改/加这些用例。处置单尺子的纯算用例在 `VehHandleRulerTest`，
+核签新走法尺子的纯算用例在 `VehSignRulerTest`。

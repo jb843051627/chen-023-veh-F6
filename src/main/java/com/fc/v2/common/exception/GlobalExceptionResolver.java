@@ -125,6 +125,18 @@ public class GlobalExceptionResolver{
     }
 
     /**
+     * 核签单（三节点新走法）递交退回：照原话退回，并点明卡在哪一格
+     */
+    @ExceptionHandler(com.fc.v2.common.exception.VehSignRejectException.class)
+    public AjaxResult vehSignReject(com.fc.v2.common.exception.VehSignRejectException e)
+    {
+        logger.error("核签单退回：{} - {}", e.getField(), e.getMessage());
+        AjaxResult result = AjaxResult.error(e.getMessage());
+        result.put("field", e.getField());
+        return result;
+    }
+
+    /**
      * 演示模式异常
      */
     @ExceptionHandler(DemoModeException.class)
